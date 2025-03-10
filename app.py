@@ -7,8 +7,11 @@ import requests
 from pyecharts import options as opts
 from pyecharts.charts import Sankey
 import json
+from collections import defaultdict
 
-app = Flask(__name__)
+app = Flask(__name__, 
+           template_folder='app/templates',
+           static_folder='app/static')
 app.config['UPLOAD_FOLDER'] = 'app/uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
@@ -35,6 +38,9 @@ def analyze_pcap(filepath):
         'sankey_data': []
     }
     
+    # 使用字典来跟踪已处理的IP对
+    processed_pairs = defaultdict(int)
+    
     # IP统计和地理位置
     for packet in packets:
         if IP in packet:
@@ -57,12 +63,9 @@ def analyze_pcap(filepath):
             stats['ip_stats'][src_ip]['sent'] += 1
             stats['ip_stats'][dst_ip]['received'] += 1
             
-            # 为桑基图准备数据
-            stats['sankey_data'].append({
-                'source': f"{src_ip}\n({stats['ip_stats'][src_ip]['location']})",
-                'target': f"{dst_ip}\n({stats['ip_stats'][dst_ip]['location']})",
-                'value': 1
-            })
+            # 为桑基图准备数据，确保源IP小于目标IP以避免循环
+            pair_key = (min(src_ip, dst_ip), max(src_ip, dst_ip))
+            processed_pairs[pair_key] += 1
             
             # 检测重传
             if TCP in packet:
@@ -72,6 +75,14 @@ def analyze_pcap(filepath):
                         'dst': dst_ip,
                         'time': packet.time
                     })
+    
+    # 将处理后的IP对转换为桑基图数据
+    for (ip1, ip2), count in processed_pairs.items():
+        stats['sankey_data'].append({
+            'source': f"{ip1}\n({stats['ip_stats'][ip1]['location']})",
+            'target': f"{ip2}\n({stats['ip_stats'][ip2]['location']})",
+            'value': count
+        })
     
     return stats
 
@@ -88,20 +99,12 @@ def generate_sankey_chart(data):
         if item['target'] not in node_map:
             node_map[item['target']] = len(nodes)
             nodes.append({'name': item['target']})
-            
-        # 合并相同source-target的值
-        link_found = False
-        for link in links:
-            if link['source'] == node_map[item['source']] and link['target'] == node_map[item['target']]:
-                link['value'] += item['value']
-                link_found = True
-                break
-        if not link_found:
-            links.append({
-                'source': node_map[item['source']],
-                'target': node_map[item['target']],
-                'value': item['value']
-            })
+        
+        links.append({
+            'source': node_map[item['source']],
+            'target': node_map[item['target']],
+            'value': item['value']
+        })
     
     c = (
         Sankey()
@@ -111,6 +114,7 @@ def generate_sankey_chart(data):
             links,
             linestyle_opt=opts.LineStyleOpts(opacity=0.3, curve=0.5, color="source"),
             label_opts=opts.LabelOpts(position="right"),
+            node_align="left"
         )
         .set_global_opts(title_opts=opts.TitleOpts(title="Network Traffic Flow"))
     )
@@ -138,6 +142,9 @@ def upload_file():
         
         # 生成桑基图数据
         sankey_data = generate_sankey_chart(stats['sankey_data'])
+        
+        # 清理上传的文件
+        os.remove(filepath)
         
         return jsonify({
             'stats': stats,
