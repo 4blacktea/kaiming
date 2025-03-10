@@ -1,6 +1,7 @@
 flask==2.3.3
 scapy==2.5.0
 pandas==1.5.3
+numpy==1.23.2
 requests==2.31.0
 python-dotenv==1.0.0
 flask-uploads==0.2.1
