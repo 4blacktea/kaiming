@@ -10,9 +10,15 @@
                     <div class="mb-3">
                         <input type="file" class="form-control" id="pcapFile" accept=".pcap,.pcapng" required>
                     </div>
+                    <div class="mb-3">
+                        <h6>Protocol Filters:</h6>
+                        <div id="protocolFilters" class="btn-group" role="group">
+                            <!-- 协议过滤按钮将动态添加到这里 -->
+                        </div>
+                    </div>
                     <button type="submit" class="btn btn-primary">Analyze</button>
                 </form>
-                <div class="loading mt-3">
+                <div class="loading mt-3" style="display: none;">
                     <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                     </div>
@@ -46,6 +52,38 @@
         <div class="col-md-12">
             <div class="card">
                 <div class="card-body">
+                    <h5 class="card-title">Packet Timeline</h5>
+                    <div class="mb-3">
+                        <label class="form-label">Timeline Filter:</label>
+                        <select id="timelineFilter" class="form-select">
+                            <option value="all">All Packets</option>
+                            <optgroup label="Protocols" id="protocolOptions">
+                            </optgroup>
+                            <optgroup label="IP Addresses" id="ipOptions">
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div id="timelineChart" class="chart-container"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Protocol Statistics</h5>
+                    <div id="protocolStats"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-body">
                     <h5 class="card-title">IP Statistics</h5>
                     <div id="ipStats"></div>
                 </div>
@@ -68,12 +106,36 @@
 
 {% block scripts %}
 <script>
+let lastUploadedFile = null;
+let protocolButtons = new Set();
+let timelineChart = null;
+let lastTimelineData = null;
+
 document.getElementById('uploadForm').addEventListener('submit', function(e) {
     e.preventDefault();
     
     const formData = new FormData();
     const fileInput = document.getElementById('pcapFile');
-    formData.append('file', fileInput.files[0]);
+    
+    // 如果文件没有改变，使用上次的文件
+    if (fileInput.files.length > 0) {
+        formData.append('file', fileInput.files[0]);
+        lastUploadedFile = fileInput.files[0];
+    } else if (lastUploadedFile) {
+        formData.append('file', lastUploadedFile);
+    } else {
+        alert('Please select a file');
+        return;
+    }
+    
+    // 添加选中的协议
+    const selectedProtocols = [];
+    document.querySelectorAll('#protocolFilters .btn-primary').forEach(button => {
+        selectedProtocols.push(button.dataset.protocol);
+    });
+    selectedProtocols.forEach(protocol => {
+        formData.append('protocols[]', protocol);
+    });
     
     document.querySelector('.loading').style.display = 'block';
     document.getElementById('results').style.display = 'none';
@@ -87,15 +149,33 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
         document.querySelector('.loading').style.display = 'none';
         document.getElementById('results').style.display = 'block';
         
-        // Update statistics
+        // 检查是否有时间戳
+        if (!data.stats.has_timestamp) {
+            alert('Warning: The PCAP file does not contain timestamp information. Timeline analysis is not available.');
+        }
+        
+        // 更新统计信息
         document.getElementById('totalPackets').textContent = data.stats.packet_count;
         document.getElementById('retransmissions').textContent = data.stats.retransmissions.length;
         
-        // Update IP statistics table
+        // 更新协议统计
+        updateProtocolStats(data.stats.protocols);
+        
+        // 更新IP统计表格
         const ipStatsHtml = generateIpStatsTable(data.stats.ip_stats);
         document.getElementById('ipStats').innerHTML = ipStatsHtml;
         
-        // Draw Sankey chart
+        // 更新协议过滤按钮
+        updateProtocolFilters(data.stats.protocols);
+        
+        // 更新时间轴选项
+        updateTimelineOptions(data.stats.protocols, data.stats.ip_list);
+        
+        // 绘制时间轴图表
+        drawTimelineChart(data.stats.timeline_data);
+        lastTimelineData = data.stats.timeline_data;
+        
+        // 绘制桑基图
         const sankeyChart = echarts.init(document.getElementById('sankeyChart'));
         sankeyChart.setOption(JSON.parse(data.sankey_data));
     })
@@ -104,6 +184,31 @@ document.getElementById('uploadForm').addEventListener('submit', function(e) {
         alert('Error analyzing file: ' + error);
     });
 });
+
+function updateProtocolStats(protocols) {
+    let html = `
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Protocol</th>
+                    <th>Packet Count</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    
+    for (const [protocol, count] of Object.entries(protocols)) {
+        html += `
+            <tr>
+                <td>${protocol}</td>
+                <td>${count}</td>
+            </tr>
+        `;
+    }
+    
+    html += '</tbody></table>';
+    document.getElementById('protocolStats').innerHTML = html;
+}
 
 function generateIpStatsTable(ipStats) {
     let html = `
@@ -114,18 +219,24 @@ function generateIpStatsTable(ipStats) {
                     <th>Location</th>
                     <th>Packets Sent</th>
                     <th>Packets Received</th>
+                    <th>Protocols</th>
                 </tr>
             </thead>
             <tbody>
     `;
     
     for (const [ip, stats] of Object.entries(ipStats)) {
+        const protocols = Object.entries(stats.protocols)
+            .map(([protocol, count]) => `${protocol}(${count})`)
+            .join(', ');
+        
         html += `
             <tr>
                 <td>${ip}</td>
                 <td>${stats.location}</td>
                 <td>${stats.sent}</td>
                 <td>${stats.received}</td>
+                <td>${protocols}</td>
             </tr>
         `;
     }
@@ -133,5 +244,117 @@ function generateIpStatsTable(ipStats) {
     html += '</tbody></table>';
     return html;
 }
+
+function updateProtocolFilters(protocols) {
+    const container = document.getElementById('protocolFilters');
+    
+    // 添加新的协议按钮
+    for (const protocol of Object.keys(protocols)) {
+        if (!protocolButtons.has(protocol)) {
+            protocolButtons.add(protocol);
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'btn btn-outline-primary me-2 mb-2';
+            button.textContent = protocol;
+            button.dataset.protocol = protocol;
+            button.onclick = function() {
+                this.classList.toggle('btn-outline-primary');
+                this.classList.toggle('btn-primary');
+                // 如果文件已经上传，自动重新分析
+                if (lastUploadedFile) {
+                    document.getElementById('uploadForm').dispatchEvent(new Event('submit'));
+                }
+            };
+            container.appendChild(button);
+        }
+    }
+}
+
+function updateTimelineOptions(protocols, ipList) {
+    const protocolGroup = document.getElementById('protocolOptions');
+    const ipGroup = document.getElementById('ipOptions');
+    
+    // 清空现有选项
+    protocolGroup.innerHTML = '';
+    ipGroup.innerHTML = '';
+    
+    // 添加协议选项
+    for (const protocol of Object.keys(protocols)) {
+        const option = document.createElement('option');
+        option.value = protocol;
+        option.textContent = protocol;
+        protocolGroup.appendChild(option);
+    }
+    
+    // 添加IP选项
+    for (const ip of ipList) {
+        const option = document.createElement('option');
+        option.value = ip;
+        option.textContent = ip;
+        ipGroup.appendChild(option);
+    }
+}
+
+function drawTimelineChart(timelineData) {
+    if (!timelineData) return;
+    
+    const selectedFilter = document.getElementById('timelineFilter').value;
+    const data = timelineData[selectedFilter];
+    
+    if (!data) return;
+    
+    // 如果图表已存在，销毁它
+    if (timelineChart) {
+        timelineChart.dispose();
+    }
+    
+    timelineChart = echarts.init(document.getElementById('timelineChart'));
+    
+    const option = {
+        title: {
+            text: 'Packet Timeline'
+        },
+        tooltip: {
+            trigger: 'axis',
+            formatter: function(params) {
+                return `Time: ${params[0].name}s<br/>Packets: ${params[0].value}`;
+            }
+        },
+        xAxis: {
+            type: 'category',
+            name: 'Time (seconds)',
+            data: data.times
+        },
+        yAxis: {
+            type: 'value',
+            name: 'Number of Packets'
+        },
+        series: [{
+            name: 'Packets',
+            type: 'line',
+            smooth: true,
+            data: data.values,
+            areaStyle: {
+                opacity: 0.3
+            }
+        }]
+    };
+    
+    timelineChart.setOption(option);
+}
+
+// 添加时间轴筛选事件监听器
+document.getElementById('timelineFilter').addEventListener('change', function() {
+    if (lastTimelineData) {
+        drawTimelineChart(lastTimelineData);
+    }
+});
+
+// 添加窗口大小变化时重绘图表的功能
+window.addEventListener('resize', function() {
+    if (timelineChart) {
+        timelineChart.resize();
+    }
+});
 </script>
 {% endblock %} 
