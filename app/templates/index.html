@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Upload PCAP File</h5>
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <input type="file" class="form-control" id="pcapFile" accept=".pcap,.pcapng" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Analyze</button>
+                </form>
+                <div class="loading mt-3">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <span class="ms-2">Analyzing file...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="results" style="display: none;">
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Analysis Results</h5>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Total Packets: <span id="totalPackets">0</span></h6>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Retransmissions: <span id="retransmissions">0</span></h6>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">IP Statistics</h5>
+                    <div id="ipStats"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title">Network Traffic Flow</h5>
+                    <div id="sankeyChart" class="chart-container"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('uploadForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const formData = new FormData();
+    const fileInput = document.getElementById('pcapFile');
+    formData.append('file', fileInput.files[0]);
+    
+    document.querySelector('.loading').style.display = 'block';
+    document.getElementById('results').style.display = 'none';
+    
+    fetch('/upload', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        document.querySelector('.loading').style.display = 'none';
+        document.getElementById('results').style.display = 'block';
+        
+        // Update statistics
+        document.getElementById('totalPackets').textContent = data.stats.packet_count;
+        document.getElementById('retransmissions').textContent = data.stats.retransmissions.length;
+        
+        // Update IP statistics table
+        const ipStatsHtml = generateIpStatsTable(data.stats.ip_stats);
+        document.getElementById('ipStats').innerHTML = ipStatsHtml;
+        
+        // Draw Sankey chart
+        const sankeyChart = echarts.init(document.getElementById('sankeyChart'));
+        sankeyChart.setOption(JSON.parse(data.sankey_data));
+    })
+    .catch(error => {
+        document.querySelector('.loading').style.display = 'none';
+        alert('Error analyzing file: ' + error);
+    });
+});
+
+function generateIpStatsTable(ipStats) {
+    let html = `
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>IP Address</th>
+                    <th>Location</th>
+                    <th>Packets Sent</th>
+                    <th>Packets Received</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    
+    for (const [ip, stats] of Object.entries(ipStats)) {
+        html += `
+            <tr>
+                <td>${ip}</td>
+                <td>${stats.location}</td>
+                <td>${stats.sent}</td>
+                <td>${stats.received}</td>
+            </tr>
+        `;
+    }
+    
+    html += '</tbody></table>';
+    return html;
+}
+</script>
+{% endblock %} 
